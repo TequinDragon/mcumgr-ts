@@ -91,7 +91,11 @@ interface McuMgrEventMap {
 	connecting: Event;
 	disconnected: Event;
 	message: CustomEvent<McuMgrMessage>;
-	imageUploadProgress: CustomEvent<{ percentage: number, uploadedBytes: number, totalBytes: number }>;
+	imageUploadProgress: CustomEvent<{
+		percentage: number;
+		uploadedBytes: number;
+		totalBytes: number;
+	}>;
 	imageUploadFinished: CustomEvent<{ hash: Uint8Array }>;
 }
 

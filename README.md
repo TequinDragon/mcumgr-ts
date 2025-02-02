@@ -1,8 +1,8 @@
 # MCU Manager (Web Bluetooth)
 
-For library is forked from boogie's webapp: https://github.com/boogie/mcumgr-web
+This library is forked from boogie's webapp: https://github.com/boogie/mcumgr-web, converted to TypeScript and published to https://www.npmjs.com/package/@tequin/mcumgr for convenience.
 
-This library provides access to MCU Manager that can manage remote devices running the Mynewt OS or Zephyr RTOS. It uses a connection profile to establish a connection with a device and sends command requests to the device.
+This library provides access to MCU Manager that can manage remote devices running Mynewt OS or Zephyr RTOS. It uses a connection profile to establish a connection with a device and sends command requests to the device.
 
 The main focus is implementing firmware updates via Web Bluetooth, however other commands might be supported as well.
 
@@ -15,3 +15,9 @@ The Web Bluetooth API provides the ability to connect and interact with Bluetoot
 Safari, Chrome, Edge and Opera on iOS are using the Safari WebKit engine which not yet supports Web Bluetooth. Mobile and desktop Firefox is not implemented it yet, too.
 
 You can try MCU Manager by visiting https://boogie.github.io/mcumgr-web/ with a supported browser. For security reasons, Web Bluetooth is only working on https addresses or localhost.
+
+## Install
+
+```sh
+npm install @tequin/mcumgr
+```

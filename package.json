@@ -1,10 +1,23 @@
 {
 	"name": "@tequin/mcumgr",
-	"version": "0.1.0",
+	"version": "0.1.1",
+	"description": "A browser only library for interacting with McuMgr devices over Web-Bluetooth",
+	"keywords": [
+		"mcumgr",
+		"zephyr",
+		"mynewt"
+	],
+	"license": "MIT",
 	"browser": "lib/mcumgr.js",
 	"types": "lib/mcumgr.d.ts",
+	"files": [
+		"lib/mcumgr.js",
+		"lib/mcumgr.d.ts"
+	],
+	"dependencies": {
+		"cborg": "^4.0.8"
+	},
 	"devDependencies": {
-		"cborg": "^4.0.8",
 		"prettier": "3.4.2"
 	},
 	"scripts": {
@@ -17,6 +30,9 @@
 		"name": "Tequin Dragon",
 		"url": "https://github.com/tequindragon"
 	},
-	"license": "MIT",
-	"description": "A browser only library for interacting with McuMgr devices over Web-Bluetooth"
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/TequinDragon/mcumgr-ts"
+	},
+	"homepage": "https://github.com/TequinDragon/mcumgr-ts"
 }
