@@ -56,10 +56,19 @@ export interface McuMgrMessage {
 	readonly length: number;
 }
 
+export type SemVersion = {
+	major: number;
+	minor: number;
+	revision: number;
+	build: number;
+};
+
 export type McuImageInfo = {
 	imageSize: number;
-	version: string;
-	hash: string;
+	version: SemVersion;
+	hash: Uint8Array;
+	hashValid: boolean;
+	tags: { [tag: number]: Uint8Array };
 };
 
 interface McuMgrEventMap {
@@ -92,6 +101,7 @@ const typedEventTarget = EventTarget as { new (): McuMgrEventTarget; prototype: 
 export class McuManager extends typedEventTarget {
 	static readonly SERVICE_UUID = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
 	static readonly CHARACTERISTIC_UUID = 'da2e7828-fbce-4e01-ae9e-261174997c48';
+	static readonly SMP_HEADER_SIZE = 8;
 
 	private _mtu: number;
 	private _device: BluetoothDevice | null;
@@ -218,7 +228,7 @@ export class McuManager extends typedEventTarget {
 	private async _sendMessage(op: number, group: number, id: number, data?: any): Promise<void> {
 		const _flags = 0;
 		let encodedData: number[] = [];
-		if (typeof data !== 'undefined') {
+		if (data) {
 			encodedData = [...cborg.encode(data)];
 		}
 		const length_lo = encodedData.length & 255;
@@ -248,21 +258,23 @@ export class McuManager extends typedEventTarget {
 		// this._logger.debug('<'  + [...message].map(x => x.toString(16).padStart(2, '0')).join(' '));
 		this._buffer = new Uint8Array([...this._buffer, ...message]);
 		const messageLength = this._buffer[2] * 256 + this._buffer[3];
-		if (this._buffer.length < messageLength + 8) return;
-		this._processMessage(this._buffer.slice(0, messageLength + 8));
-		this._buffer = this._buffer.slice(messageLength + 8);
+
+		// this._logger.debug('<'  + [...message].map(x => x.toString(16).padStart(2, '0')).join(' '));
+		if (this._buffer.length < messageLength + McuManager.SMP_HEADER_SIZE) return;
+
+		this._processMessage(this._buffer.slice(0, messageLength + McuManager.SMP_HEADER_SIZE));
+		this._buffer = this._buffer.slice(messageLength + McuManager.SMP_HEADER_SIZE);
 	}
 	private _processMessage(message: Uint8Array) {
 		const [op, _flags, length_hi, length_lo, group_hi, group_lo, _seq, id] = message;
 		const data = cborg.decode(message.slice(8));
 		const length = length_hi * 256 + length_lo;
 		const group = group_hi * 256 + group_lo;
-		if (
-			group === GroupId.Image &&
-			id === GroupImageId.Upload &&
-			(data.rc === 0 || data.rc === undefined) &&
-			data.off
-		) {
+		// Note that "rc" may not be present if it is 0
+		if (data.rc) {
+			this._logger.debug('Got a non-zero response code');
+			this._logger.debug(`Message: op: ${op}, group: ${group}, id: ${id}, length: ${length}`, data);
+		} else if (group === GroupId.Image && id === GroupImageId.Upload && data.off) {
 			// Clear timeout since we received a response
 			if (this._uploadTimeout) {
 				clearTimeout(this._uploadTimeout);
@@ -369,51 +381,94 @@ export class McuManager extends typedEventTarget {
 
 		await this._uploadNext();
 	}
+
+	private *_extractTlvs(data: ArrayBuffer): Generator<{ tag: number; value: Uint8Array }> {
+		const view = new DataView(data);
+		let offset = 0;
+		while (offset < view.byteLength) {
+			const tag = view.getUint16(offset, true);
+			const len = view.getUint16(offset + 2, true);
+			offset += 4;
+			const data = view.buffer.slice(offset, offset + len);
+			offset += len;
+
+			yield { tag, value: new Uint8Array(data) };
+		}
+	}
+
 	async imageInfo(image: ArrayBuffer): Promise<McuImageInfo> {
 		// https://interrupt.memfault.com/blog/mcuboot-overview#mcuboot-image-binaries
 
-		const view = new Uint8Array(image);
+		const littleEndian = true;
+		const view = new DataView(image);
 
 		// check header length
-		if (view.length < 32) {
+		if (view.byteLength < 32) {
 			throw new Error('Invalid image (too short file)');
 		}
 
 		// check MAGIC bytes 0x96f3b83d
-		if (view[0] !== 0x3d || view[1] !== 0xb8 || view[2] !== 0xf3 || view[3] !== 0x96) {
+		if (view.getUint32(0, littleEndian) !== 0x96f3b83d)
 			throw new Error('Invalid image (wrong magic bytes)');
-		}
 
 		// check load address is 0x00000000
-		if (view[4] !== 0x00 || view[5] !== 0x00 || view[6] !== 0x00 || view[7] !== 0x00) {
-			throw new Error('Invalid image (wrong load address)');
-		}
+		if (view.getUint32(4, littleEndian) != 0) throw new Error('Invalid image (wrong load address)');
 
-		const headerSize = view[8] + view[9] * 2 ** 8;
+		const headerSize = view.getUint16(8, true);
 
-		// check protected TLV area size is 0
-		if (view[10] !== 0x00 || view[11] !== 0x00) {
-			throw new Error('Invalid image (wrong protected TLV area size)');
-		}
+		// Protected TLV area is included in the hash
+		const protected_tlv_lenth = view.getUint16(10, littleEndian);
 
-		const imageSize = view[12] + view[13] * 2 ** 8 + view[14] * 2 ** 16 + view[15] * 2 ** 24;
+		const imageSize = view.getUint32(12, littleEndian);
 
 		// check image size is correct
-		if (view.length < imageSize + headerSize) {
+		if (view.byteLength < imageSize + headerSize)
 			throw new Error('Invalid image (wrong image size)');
-		}
 
 		// check flags is 0x00000000
-		if (view[16] !== 0x00 || view[17] !== 0x00 || view[18] !== 0x00 || view[19] !== 0x00) {
-			throw new Error('Invalid image (wrong flags)');
+		if (view.getUint32(16, littleEndian) !== 0) throw new Error('Invalid image (wrong flags)');
+
+		const version: SemVersion = {
+			major: view.getUint8(20),
+			minor: view.getUint8(21),
+			revision: view.getUint16(22, littleEndian),
+			build: view.getUint32(24, littleEndian),
+		};
+
+		const hash = new Uint8Array(
+			await this._hash(image.slice(0, headerSize + imageSize + protected_tlv_lenth)),
+		);
+		const info = { version, hash, hashValid: false, imageSize, tags: [] } as McuImageInfo;
+
+		let offset = headerSize + imageSize;
+		let tlv_end = offset;
+		if (protected_tlv_lenth > 0) {
+			if (view.getUint16(offset, littleEndian) !== 0x6908)
+				throw new Error(
+					`Expected protected TLV magic number. (0x${offset.toString(16)}: 0x${view.getUint16(offset, littleEndian).toString(16)})`,
+				);
+
+			tlv_end = view.getUint16(offset + 2, littleEndian) + offset;
+			for (let tlv of this._extractTlvs(view.buffer.slice(offset + 4, tlv_end))) {
+				info.tags[tlv.tag] = tlv.value;
+			}
+			offset = tlv_end;
 		}
 
-		const version = `${view[20]}.${view[21]}.${view[22] + view[23] * 2 ** 8}`;
+		if (view.getUint16(offset, littleEndian) !== 0x6907)
+			throw new Error(
+				`Expected TLV magic number. (0x${offset.toString(16)}: 0x${view.getUint16(offset, littleEndian).toString(16)})`,
+			);
 
-		const hash = [...new Uint8Array(await this._hash(image.slice(0, imageSize + headerSize)))]
-			.map((b) => b.toString(16).padStart(2, '0'))
-			.join('');
+		tlv_end = view.getUint16(offset + 2, littleEndian) + offset;
+		for (let tlv of this._extractTlvs(view.buffer.slice(offset + 4, tlv_end))) {
+			info.tags[tlv.tag] = tlv.value;
+		}
 
-		return { hash, version, imageSize };
+		if (16 in info.tags && info.tags[16].length == hash.length) {
+			info.hashValid = info.tags[16].every((b, i) => b === hash[i]);
+		}
+
+		return info;
 	}
 }
