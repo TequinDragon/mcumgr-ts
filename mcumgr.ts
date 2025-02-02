@@ -48,13 +48,48 @@ type Logger = {
 	error: (...data: any[]) => void;
 };
 
+export interface McuMgrMessage {
+	readonly op: number;
+	readonly group: number;
+	readonly id: number;
+	readonly data: any;
+	readonly length: number;
+}
+
 export type McuImageInfo = {
 	imageSize: number;
 	version: string;
 	hash: string;
 };
 
-export class McuManager {
+interface McuMgrEventMap {
+	connected: Event;
+	connecting: Event;
+	disconnected: Event;
+	message: CustomEvent<McuMgrMessage>;
+	imageUploadProgress: CustomEvent<{ percentage: number }>;
+	imageUploadFinished: Event;
+}
+
+// Helper interface to superimpose our custom events (and Event types) to the EventTarget
+// See: https://dev.to/43081j/strongly-typed-event-emitters-using-eventtarget-in-typescript-3658
+interface McuMgrEventTarget extends EventTarget {
+	addEventListener<K extends keyof McuMgrEventMap>(
+		type: K,
+		listener: (ev: McuMgrEventMap[K]) => void,
+		options?: boolean | AddEventListenerOptions,
+	): void;
+	addEventListener(
+		type: string,
+		callback: EventListenerOrEventListenerObject | null,
+		options?: EventListenerOptions | boolean,
+	): void;
+}
+
+// Again, see: https://dev.to/43081j/strongly-typed-event-emitters-using-eventtarget-in-typescript-3658
+const typedEventTarget = EventTarget as { new (): McuMgrEventTarget; prototype: McuMgrEventTarget };
+
+export class McuManager extends typedEventTarget {
 	static readonly SERVICE_UUID = '8d53dc1d-1db7-4cd3-868b-8a527460aa84';
 	static readonly CHARACTERISTIC_UUID = 'da2e7828-fbce-4e01-ae9e-261174997c48';
 
@@ -62,15 +97,6 @@ export class McuManager {
 	private _device: BluetoothDevice | null;
 	private _service: BluetoothRemoteGATTService | null;
 	private _characteristic: BluetoothRemoteGATTCharacteristic | null;
-
-	private _connectCallback: null | (() => void);
-	private _connectingCallback: null | (() => void);
-	private _disconnectCallback: null | (() => void);
-	private _messageCallback:
-		| null
-		| ((message: { op: number; group: number; id: number; data: any; length: number }) => void);
-	private _imageUploadProgressCallback: null | ((event: { percentage: number }) => void);
-	private _imageUploadFinishedCallback: null | (() => void);
 
 	private _uploadIsInProgress: boolean;
 	private _buffer: Uint8Array;
@@ -82,17 +108,13 @@ export class McuManager {
 	private _uploadTimeout: number | null;
 	private _uploadSlot: number;
 
-	constructor(di: null | { logger?: Logger }) {
+	constructor(di?: { logger?: Logger }) {
+		super();
+
 		this._mtu = 400;
 		this._device = null;
 		this._service = null;
 		this._characteristic = null;
-		this._connectCallback = null;
-		this._connectingCallback = null;
-		this._disconnectCallback = null;
-		this._messageCallback = null;
-		this._imageUploadProgressCallback = null;
-		this._imageUploadFinishedCallback = null;
 		this._uploadIsInProgress = false;
 		this._buffer = new Uint8Array();
 		this._logger = di?.logger ?? {
@@ -147,7 +169,7 @@ export class McuManager {
 	private _connect(timeout: number = 1000) {
 		setTimeout(async () => {
 			try {
-				if (this._connectingCallback) this._connectingCallback();
+				this.dispatchEvent(new Event('connecting'));
 				const server = await this._device?.gatt?.connect();
 				if (server === undefined) {
 					this._logger.error('Could not connect');
@@ -178,36 +200,12 @@ export class McuManager {
 		this._userRequestedDisconnect = true;
 		this._device?.gatt?.disconnect();
 	}
-	onConnecting(callback: () => void): McuManager {
-		this._connectingCallback = callback;
-		return this;
-	}
-	onConnect(callback: () => void): McuManager {
-		this._connectCallback = callback;
-		return this;
-	}
-	onDisconnect(callback: () => void): McuManager {
-		this._disconnectCallback = callback;
-		return this;
-	}
-	onMessage(callback: () => void): McuManager {
-		this._messageCallback = callback;
-		return this;
-	}
-	onImageUploadProgress(callback: () => void): McuManager {
-		this._imageUploadProgressCallback = callback;
-		return this;
-	}
-	onImageUploadFinished(callback: () => void): McuManager {
-		this._imageUploadFinishedCallback = callback;
-		return this;
-	}
-	private async _connected() {
-		if (this._connectCallback) this._connectCallback();
+	private _connected() {
+		this.dispatchEvent(new Event('connected'));
 	}
 	private async _disconnected() {
 		this._logger.info('Disconnected.');
-		if (this._disconnectCallback) this._disconnectCallback();
+		this.dispatchEvent(new Event('disconnected'));
 		this._device = null;
 		this._service = null;
 		this._characteristic = null;
@@ -273,7 +271,8 @@ export class McuManager {
 			this._uploadNext();
 			return;
 		}
-		if (this._messageCallback) this._messageCallback({ op, group, id, data, length });
+
+		this.dispatchEvent(new CustomEvent('message', { detail: { op, group, id, data, length } }));
 	}
 	cmdReset(): Promise<void> {
 		return this._sendMessage(OpCode.Write, GroupId.OS, GroupOSId.Reset);
@@ -310,7 +309,7 @@ export class McuManager {
 
 		if (this._uploadOffset >= this._uploadImage.byteLength) {
 			this._uploadIsInProgress = false;
-			if (this._imageUploadFinishedCallback) this._imageUploadFinishedCallback();
+			this.dispatchEvent(new Event('imageUploadFinished'));
 			return;
 		}
 
@@ -337,10 +336,14 @@ export class McuManager {
 			message.len = this._uploadImage.byteLength;
 			message.sha = new Uint8Array(await this._hash(this._uploadImage));
 		}
-		if (this._imageUploadProgressCallback)
-			this._imageUploadProgressCallback({
-				percentage: Math.floor((this._uploadOffset / this._uploadImage.byteLength) * 100),
-			});
+
+		this.dispatchEvent(
+			new CustomEvent('imageUploadProgress', {
+				detail: {
+					percentage: Math.floor((this._uploadOffset / this._uploadImage.byteLength) * 100),
+				},
+			}),
+		);
 
 		const length = this._mtu - cborg.encode(message).byteLength - nmpOverhead;
 
@@ -351,7 +354,7 @@ export class McuManager {
 		// Keep offset for retry
 		// this._uploadOffset += length;
 
-		this._sendMessage(OpCode.Write, GroupId.Image, GroupImageId.Upload, message);
+		await this._sendMessage(OpCode.Write, GroupId.Image, GroupImageId.Upload, message);
 	}
 	async cmdUpload(image: ArrayBuffer, slot: number = 0) {
 		if (this._uploadIsInProgress) {
@@ -364,7 +367,7 @@ export class McuManager {
 		this._uploadImage = image;
 		this._uploadSlot = slot;
 
-		this._uploadNext();
+		await this._uploadNext();
 	}
 	async imageInfo(image: ArrayBuffer): Promise<McuImageInfo> {
 		// https://interrupt.memfault.com/blog/mcuboot-overview#mcuboot-image-binaries
