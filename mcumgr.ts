@@ -193,6 +193,12 @@ export class McuManager extends typedEventTarget {
 			return;
 		}
 	}
+
+	attach(device: BluetoothDevice) {
+		this._device = device;
+		this._connect(0);
+	}
+
 	private _connect(timeout: number = 1000) {
 		setTimeout(async () => {
 			try {
