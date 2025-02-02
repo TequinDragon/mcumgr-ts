@@ -52,7 +52,7 @@ export interface McuMgrMessage {
 	readonly op: number;
 	readonly group: number;
 	readonly id: number;
-	readonly data: any;
+	readonly data: { images: McuImageStat[] } | any;
 	readonly length: number;
 }
 
@@ -62,6 +62,21 @@ export type SemVersion = {
 	revision: number;
 	build: number;
 };
+
+export interface McuImageStat {
+	/** Is the current image actively running. */
+	readonly active: boolean;
+	readonly bootable: boolean;
+	/** If the image is not confirmed, the bootloader will revert to the other image on reboot. */
+	readonly confirmed: boolean;
+	/** The SHA256 hash of the firmware image. */
+	readonly hash: Uint8Array;
+	/** If true, the bootloader will boot into this image on next reboot. */
+	readonly pending: boolean;
+	readonly permanent: boolean;
+	readonly slot: number;
+	readonly version: SemVersion;
+}
 
 export type McuImageInfo = {
 	imageSize: number;
@@ -76,8 +91,8 @@ interface McuMgrEventMap {
 	connecting: Event;
 	disconnected: Event;
 	message: CustomEvent<McuMgrMessage>;
-	imageUploadProgress: CustomEvent<{ percentage: number }>;
-	imageUploadFinished: Event;
+	imageUploadProgress: CustomEvent<{ percentage: number, uploadedBytes: number, totalBytes: number }>;
+	imageUploadFinished: CustomEvent<{ hash: Uint8Array }>;
 }
 
 // Helper interface to superimpose our custom events (and Event types) to the EventTarget
@@ -111,10 +126,11 @@ export class McuManager extends typedEventTarget {
 	private _uploadIsInProgress: boolean;
 	private _buffer: Uint8Array;
 	private _logger: Logger;
-	private _seq;
-	private _uploadOffset;
+	private _seq: number;
+	private _uploadOffset: number;
 	private _userRequestedDisconnect;
 	private _uploadImage: ArrayBuffer | null;
+	private _uploadImageInfo: McuImageInfo | null;
 	private _uploadTimeout: number | null;
 	private _uploadSlot: number;
 
@@ -136,6 +152,7 @@ export class McuManager extends typedEventTarget {
 		this._uploadOffset = 0;
 		this._userRequestedDisconnect = false;
 		this._uploadImage = null;
+		this._uploadImageInfo = null;
 		this._uploadTimeout = null;
 		this._uploadSlot = 0;
 	}
@@ -321,7 +338,13 @@ export class McuManager extends typedEventTarget {
 
 		if (this._uploadOffset >= this._uploadImage.byteLength) {
 			this._uploadIsInProgress = false;
-			this.dispatchEvent(new Event('imageUploadFinished'));
+			this.dispatchEvent(
+				new CustomEvent('imageUploadFinished', {
+					detail: {
+						hash: this._uploadImageInfo?.hash,
+					},
+				}),
+			);
 			return;
 		}
 
@@ -353,6 +376,8 @@ export class McuManager extends typedEventTarget {
 			new CustomEvent('imageUploadProgress', {
 				detail: {
 					percentage: Math.floor((this._uploadOffset / this._uploadImage.byteLength) * 100),
+					uploadedBytes: this._uploadOffset,
+					totalBytes: this._uploadImage.byteLength,
 				},
 			}),
 		);
@@ -377,6 +402,7 @@ export class McuManager extends typedEventTarget {
 
 		this._uploadOffset = 0;
 		this._uploadImage = image;
+		this._uploadImageInfo = await this.imageInfo(image);
 		this._uploadSlot = slot;
 
 		await this._uploadNext();
