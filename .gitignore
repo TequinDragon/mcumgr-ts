@@ -1,1 +1,11 @@
+# Output files
 lib/
+
+# Dependency files
+node_modules/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional eslint cache
+.eslintcache

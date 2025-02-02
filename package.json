@@ -1,19 +1,22 @@
 {
-  "name": "@tequin/mcumgr",
-  "version": "0.0.1",
-  "browser": "lib/mcumgr.js",
-  "types": "lib/mcumgr.d.ts",
-  "devDependencies": {
-		"cborg": "^4.0.8"
-  },
-  "scripts": {
-    "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "author": {
-    "name": "Tequin Dragon" ,
-    "url": "https://github.com/tequindragon"
-  },
-  "license": "MIT",
-  "description": ""
+	"name": "@tequin/mcumgr",
+	"version": "0.0.1",
+	"browser": "lib/mcumgr.js",
+	"types": "lib/mcumgr.d.ts",
+	"devDependencies": {
+		"cborg": "^4.0.8",
+		"prettier": "3.4.2"
+	},
+	"scripts": {
+		"build": "tsc",
+		"lint": "prettier --check .",
+		"format": "prettier --write .",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"author": {
+		"name": "Tequin Dragon",
+		"url": "https://github.com/tequindragon"
+	},
+	"license": "MIT",
+	"description": ""
 }
