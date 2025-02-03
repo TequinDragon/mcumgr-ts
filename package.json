@@ -1,6 +1,6 @@
 {
 	"name": "@tequin/mcumgr",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "A browser only library for interacting with McuMgr devices over Web-Bluetooth",
 	"keywords": [
 		"mcumgr",
@@ -8,13 +8,15 @@
 		"mynewt"
 	],
 	"license": "MIT",
-	"browser": "lib/mcumgr.js",
+	"main": "lib/mcumgr.js",
 	"types": "lib/mcumgr.d.ts",
+	"type": "module",
 	"files": [
 		"lib/mcumgr.js",
 		"lib/mcumgr.d.ts"
 	],
 	"dependencies": {
+		"@types/web-bluetooth": "^0.0.20",
 		"cborg": "^4.0.8"
 	},
 	"devDependencies": {

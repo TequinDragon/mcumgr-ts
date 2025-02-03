@@ -138,16 +138,16 @@ export class McuManager extends typedEventTarget {
 	private _uploadTimeout: number | null;
 	private _uploadSlot: number;
 
-	constructor(di?: { logger?: Logger }) {
+	constructor(options?: { logger?: Logger, mtu?: number }) {
 		super();
 
-		this._mtu = 400;
+		this._mtu = options?.mtu ?? 400;
 		this._device = null;
 		this._service = null;
 		this._characteristic = null;
 		this._uploadIsInProgress = false;
 		this._buffer = new Uint8Array();
-		this._logger = di?.logger ?? {
+		this._logger = options?.logger ?? {
 			debug: (...args: any[]) => console.debug('McuMgr:', ...args),
 			info: (...args: any[]) => console.log('McuMgr:', ...args),
 			error: (...args: any[]) => console.error('McuMgr:', ...args),
