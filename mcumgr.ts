@@ -127,25 +127,47 @@ export class McuManager extends typedEventTarget {
 	private _service: BluetoothRemoteGATTService | null;
 	private _characteristic: BluetoothRemoteGATTCharacteristic | null;
 
-	private _uploadIsInProgress: boolean;
 	private _buffer: Uint8Array;
 	private _logger: Logger;
 	private _seq: number;
-	private _uploadOffset: number;
 	private _userRequestedDisconnect;
-	private _uploadImage: ArrayBuffer | null;
-	private _uploadImageInfo: McuImageInfo | null;
-	private _uploadTimeout: number | null;
-	private _uploadSlot: number;
+	private _upload: {
+		isInProgress: boolean,
+		slot: number,
+		offset: number,
+		image: ArrayBuffer | null,
+		imageInfo: McuImageInfo| null,
+		timeoutId: number | null,
+		retryTimeout: number,
+		stats: {
+			started: number,
+			timer: number,
+			retries: number,
+		},
+	};
 
-	constructor(options?: { logger?: Logger, mtu?: number }) {
+	constructor(options?: { logger?: Logger, mtu?: number, retryTimeout?: number }) {
 		super();
 
 		this._mtu = options?.mtu ?? 400;
 		this._device = null;
 		this._service = null;
 		this._characteristic = null;
-		this._uploadIsInProgress = false;
+		this._upload = {
+			slot: 0,
+			isInProgress: false,
+			offset: 0,
+			image: null,
+			imageInfo: null,
+			timeoutId: null,
+			retryTimeout: options?.retryTimeout ?? 1000,
+			stats:{
+				started: 0,
+				timer: 0,
+				retries: 0,
+			},
+
+		}
 		this._buffer = new Uint8Array();
 		this._logger = options?.logger ?? {
 			debug: (...args: any[]) => console.debug('McuMgr:', ...args),
@@ -153,12 +175,7 @@ export class McuManager extends typedEventTarget {
 			error: (...args: any[]) => console.error('McuMgr:', ...args),
 		};
 		this._seq = 0;
-		this._uploadOffset = 0;
 		this._userRequestedDisconnect = false;
-		this._uploadImage = null;
-		this._uploadImageInfo = null;
-		this._uploadTimeout = null;
-		this._uploadSlot = 0;
 	}
 
 	private async _requestDevice(filters?: BluetoothLEScanFilter[]) {
@@ -224,7 +241,7 @@ export class McuManager extends typedEventTarget {
 				);
 				await this._characteristic.startNotifications();
 				await this._connected();
-				if (this._uploadIsInProgress) {
+				if (this._upload.isInProgress) {
 					this._uploadNext();
 				}
 			} catch (error) {
@@ -246,7 +263,7 @@ export class McuManager extends typedEventTarget {
 		this._device = null;
 		this._service = null;
 		this._characteristic = null;
-		this._uploadIsInProgress = false;
+		this._upload.isInProgress = false;
 		this._userRequestedDisconnect = false;
 	}
 	get name(): string | null {
@@ -278,10 +295,8 @@ export class McuManager extends typedEventTarget {
 		this._seq = (this._seq + 1) % 256;
 	}
 	private _notification(event: Event) {
-		// this._logger.info('message received');
 		const target = event.target as BluetoothRemoteGATTCharacteristic;
 		const message = new Uint8Array(target.value!.buffer);
-		// this._logger.info(message);
 		// this._logger.debug('<'  + [...message].map(x => x.toString(16).padStart(2, '0')).join(' '));
 		this._buffer = new Uint8Array([...this._buffer, ...message]);
 		const messageLength = this._buffer[2] * 256 + this._buffer[3];
@@ -302,11 +317,16 @@ export class McuManager extends typedEventTarget {
 			this._logger.debug('Got a non-zero response code');
 			this._logger.debug(`Message: op: ${op}, group: ${group}, id: ${id}, length: ${length}`, data);
 		} else if (group === GroupId.Image && id === GroupImageId.Upload && data.off) {
+			// Keep track of time it took for a response
+			const responseTime = performance.now();
+			this._logger.debug(`Took ${responseTime - this._upload.stats.timer}ms to upload image segment`);
+			this._upload.stats.timer = responseTime;
+
 			// Clear timeout since we received a response
-			if (this._uploadTimeout) {
-				clearTimeout(this._uploadTimeout);
+			if (this._upload.timeoutId) {
+				clearTimeout(this._upload.timeoutId);
 			}
-			this._uploadOffset = data.off;
+			this._upload.offset = data.off;
 			this._uploadNext();
 			return;
 		}
@@ -341,17 +361,18 @@ export class McuManager extends typedEventTarget {
 		return crypto.subtle.digest('SHA-256', image);
 	}
 	private async _uploadNext() {
-		if (!this._uploadImage) {
+		if (!this._upload.image) {
 			this._logger.error('No firmware upload to do...');
 			return;
 		}
 
-		if (this._uploadOffset >= this._uploadImage.byteLength) {
-			this._uploadIsInProgress = false;
+		if (this._upload.offset >= this._upload.image.byteLength) {
+			this._logger.info(`Took ${performance.now() - this._upload.stats.started}ms to upload firmware. (${this._upload.stats.retries} retries)`);
+			this._upload.isInProgress = false;
 			this.dispatchEvent(
 				new CustomEvent('imageUploadFinished', {
 					detail: {
-						hash: this._uploadImageInfo?.hash,
+						hash: this._upload.imageInfo?.hash,
 					},
 				}),
 			);
@@ -359,15 +380,16 @@ export class McuManager extends typedEventTarget {
 		}
 
 		// Clear any existing timeout
-		if (this._uploadTimeout) {
-			clearTimeout(this._uploadTimeout);
-			this._uploadTimeout = null;
+		if (this._upload.timeoutId) {
+			clearTimeout(this._upload.timeoutId);
+			this._upload.timeoutId = null;
 		}
 		// Set new timeout
-		this._uploadTimeout = window.setTimeout(() => {
-			this._logger.info('Upload chunk timeout, retry');
+		this._upload.timeoutId = window.setTimeout(() => {
+			// this._logger.info('Upload chunk timeout, retry');
+			this._upload.stats.retries++;
 			this._uploadNext();
-		}, 100);
+		}, this._upload.retryTimeout);
 
 		const nmpOverhead = 8;
 		type MCUPayload = {
@@ -376,18 +398,18 @@ export class McuManager extends typedEventTarget {
 			len?: number;
 			sha?: Uint8Array;
 		};
-		const message: MCUPayload = { data: new Uint8Array(), off: this._uploadOffset };
-		if (this._uploadOffset === 0) {
-			message.len = this._uploadImage.byteLength;
-			message.sha = new Uint8Array(await this._hash(this._uploadImage));
+		const message: MCUPayload = { data: new Uint8Array(), off: this._upload.offset };
+		if (this._upload.offset === 0) {
+			message.len = this._upload.image.byteLength;
+			message.sha = new Uint8Array(await this._hash(this._upload.image));
 		}
 
 		this.dispatchEvent(
 			new CustomEvent('imageUploadProgress', {
 				detail: {
-					percentage: Math.floor((this._uploadOffset / this._uploadImage.byteLength) * 100),
-					uploadedBytes: this._uploadOffset,
-					totalBytes: this._uploadImage.byteLength,
+					percentage: Math.floor((this._upload.offset / this._upload.image.byteLength) * 100),
+					uploadedBytes: this._upload.offset,
+					totalBytes: this._upload.image.byteLength,
 				},
 			}),
 		);
@@ -395,7 +417,7 @@ export class McuManager extends typedEventTarget {
 		const length = this._mtu - cborg.encode(message).byteLength - nmpOverhead;
 
 		message.data = new Uint8Array(
-			this._uploadImage.slice(this._uploadOffset, this._uploadOffset + length),
+			this._upload.image.slice(this._upload.offset, this._upload.offset + length),
 		);
 
 		// Keep offset for retry
@@ -404,16 +426,20 @@ export class McuManager extends typedEventTarget {
 		await this._sendMessage(OpCode.Write, GroupId.Image, GroupImageId.Upload, message);
 	}
 	async cmdUpload(image: ArrayBuffer, slot: number = 0) {
-		if (this._uploadIsInProgress) {
+		if (this._upload.isInProgress) {
 			this._logger.error('Upload is already in progress.');
 			return;
 		}
-		this._uploadIsInProgress = true;
+		this._upload.isInProgress = true;
 
-		this._uploadOffset = 0;
-		this._uploadImage = image;
-		this._uploadImageInfo = await this.imageInfo(image);
-		this._uploadSlot = slot;
+		this._upload.stats.timer = performance.now();
+		this._upload.stats.started = performance.now();
+		this._upload.stats.retries = 0;
+
+		this._upload.offset = 0;
+		this._upload.image = image;
+		this._upload.imageInfo = await this.imageInfo(image);
+		this._upload.slot = slot;
 
 		await this._uploadNext();
 	}
