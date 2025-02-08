@@ -239,7 +239,21 @@ export class McuManager extends typedEventTarget {
 					'characteristicvaluechanged',
 					this._notification.bind(this),
 				);
-				await this._characteristic.startNotifications();
+				const startNotifications = async() => {
+					try{
+						if (!this._characteristic)
+							return;
+						await this._characteristic!.startNotifications();
+					} catch (error) {
+						if (error instanceof Error && error.name == 'NotSupportedError') {
+							setTimeout(startNotifications, 100);
+						} else {
+							throw error;
+						}
+					}
+				};
+				await startNotifications();
+
 				await this._connected();
 				if (this._upload.isInProgress) {
 					this._uploadNext();
