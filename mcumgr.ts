@@ -132,21 +132,22 @@ export class McuManager extends typedEventTarget {
 	private _seq: number;
 	private _userRequestedDisconnect;
 	private _upload: {
-		isInProgress: boolean,
-		slot: number,
-		offset: number,
-		image: ArrayBuffer | null,
-		imageInfo: McuImageInfo| null,
-		timeoutId: number | null,
-		retryTimeout: number,
+		isInProgress: boolean;
+		slot: number;
+		offset: number;
+		image: ArrayBuffer | null;
+		imageInfo: McuImageInfo | null;
+		timeoutId: number | null;
+		retryTimeout: number;
 		stats: {
-			started: number,
-			timer: number,
-			retries: number,
-		},
+			started: number;
+			timer: number;
+			average: number;
+			retries: number;
+		};
 	};
 
-	constructor(options?: { logger?: Logger, mtu?: number, retryTimeout?: number }) {
+	constructor(options?: { logger?: Logger; mtu?: number; retryTimeout?: number }) {
 		super();
 
 		this._mtu = options?.mtu ?? 400;
@@ -161,13 +162,13 @@ export class McuManager extends typedEventTarget {
 			imageInfo: null,
 			timeoutId: null,
 			retryTimeout: options?.retryTimeout ?? 1000,
-			stats:{
+			stats: {
 				started: 0,
 				timer: 0,
+				average: 0,
 				retries: 0,
 			},
-
-		}
+		};
 		this._buffer = new Uint8Array();
 		this._logger = options?.logger ?? {
 			debug: (...args: any[]) => console.debug('McuMgr:', ...args),
@@ -239,13 +240,16 @@ export class McuManager extends typedEventTarget {
 					'characteristicvaluechanged',
 					this._notification.bind(this),
 				);
-				const startNotifications = async() => {
-					try{
-						if (!this._characteristic)
-							return;
-						await this._characteristic!.startNotifications();
+				const startNotifications = async () => {
+					try {
+						if (!this._characteristic) return;
+						await this._characteristic.startNotifications();
 					} catch (error) {
+						// Dear Web Bluetooth spec....
+						// NotSupportError should really be OperationError or something to indicate "busy".
 						if (error instanceof Error && error.name == 'NotSupportedError') {
+							// GATT service only supports one concurrent operation at a time.
+							// Try again when it's hopefully not busy.
 							setTimeout(startNotifications, 100);
 						} else {
 							throw error;
@@ -284,6 +288,8 @@ export class McuManager extends typedEventTarget {
 		return this._device?.name ?? null;
 	}
 	private async _sendMessage(op: number, group: number, id: number, data?: any): Promise<void> {
+		if (!this._characteristic) throw new Error('McuMgr is not connected');
+
 		const _flags = 0;
 		let encodedData: number[] = [];
 		if (data) {
@@ -305,7 +311,7 @@ export class McuManager extends typedEventTarget {
 			...encodedData,
 		];
 		// this._logger.debug('>'  + message.map(x => x.toString(16).padStart(2, '0')).join(' '));
-		await this._characteristic!.writeValueWithoutResponse(Uint8Array.from(message));
+		await this._characteristic.writeValueWithoutResponse(Uint8Array.from(message));
 		this._seq = (this._seq + 1) % 256;
 	}
 	private _notification(event: Event) {
@@ -332,9 +338,10 @@ export class McuManager extends typedEventTarget {
 			this._logger.debug(`Message: op: ${op}, group: ${group}, id: ${id}, length: ${length}`, data);
 		} else if (group === GroupId.Image && id === GroupImageId.Upload && data.off) {
 			// Keep track of time it took for a response
-			const responseTime = performance.now();
-			this._logger.debug(`Took ${responseTime - this._upload.stats.timer}ms to upload image segment`);
-			this._upload.stats.timer = responseTime;
+			const responseTime = performance.now() - this._upload.stats.timer;
+			this._logger.debug(`Image chunk upload time: ${(responseTime).toFixed(0)}ms, average: ${(+this._upload.stats.average).toFixed(0)}ms`);
+			this._upload.stats.average = (this._upload.stats.average * 99 + responseTime) / 100;
+			this._upload.stats.timer = performance.now();
 
 			// Clear timeout since we received a response
 			if (this._upload.timeoutId) {
@@ -381,7 +388,13 @@ export class McuManager extends typedEventTarget {
 		}
 
 		if (this._upload.offset >= this._upload.image.byteLength) {
-			this._logger.info(`Took ${performance.now() - this._upload.stats.started}ms to upload firmware. (${this._upload.stats.retries} retries)`);
+			const elapsedUploadTime = (performance.now() - this._upload.stats.started) / 1000;
+			this._logger.info(
+				`Firmware upload stats:` +
+					`\n\tTotal time: ${(+elapsedUploadTime).toFixed(2)}s` +
+					`\n\tAverage chunk upload time: ${(+this._upload.stats.average).toFixed(0)}ms` +
+					`\n\tRetries: ${this._upload.stats.retries}`,
+			);
 			this._upload.isInProgress = false;
 			this.dispatchEvent(
 				new CustomEvent('imageUploadFinished', {
@@ -400,7 +413,7 @@ export class McuManager extends typedEventTarget {
 		}
 		// Set new timeout
 		this._upload.timeoutId = window.setTimeout(() => {
-			// this._logger.info('Upload chunk timeout, retry');
+			this._logger.info('Upload chunk timeout, retry');
 			this._upload.stats.retries++;
 			this._uploadNext();
 		}, this._upload.retryTimeout);

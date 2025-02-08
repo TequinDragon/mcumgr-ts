@@ -1,6 +1,6 @@
 {
 	"name": "@tequin/mcumgr",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "A browser only library for interacting with McuMgr devices over Web-Bluetooth",
 	"keywords": [
 		"mcumgr",
